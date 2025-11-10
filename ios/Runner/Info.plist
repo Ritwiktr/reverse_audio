@@ -49,5 +49,36 @@
 	<string>This app needs access to the microphone to record audio for reversing.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Allow Reverse Audio to export audio clips to your library.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Allow Reverse Audio to access your photo library to import audio files.</string>
+	<key>UISupportsDocumentBrowser</key>
+	<true/>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Audio Files</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.audio</string>
+				<string>public.mp3</string>
+				<string>public.mpeg-4-audio</string>
+				<string>com.apple.m4a-audio</string>
+				<string>public.aac-audio</string>
+				<string>public.wav</string>
+				<string>com.microsoft.waveform-audio</string>
+				<string>public.aiff-audio</string>
+				<string>com.apple.aiff-audio</string>
+				<string>public.flac-audio</string>
+				<string>org.xiph.flac</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

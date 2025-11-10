@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:audio_session/audio_session.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/foundation.dart' show kIsWeb, ChangeNotifier;
 import 'package:just_audio/just_audio.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -14,6 +14,7 @@ import '../../../core/database/audio_history_database.dart';
 import '../../../core/error/app_failure.dart';
 import '../../../core/services/audio_processing_service.dart';
 import '../../../core/services/permission_service.dart';
+import '../../../core/services/pitch_service.dart';
 import '../../../core/services/sharing_service.dart';
 import '../../../core/usecases/share_audio_usecase.dart';
 import '../domain/entities/processed_audio.dart';
@@ -49,27 +50,107 @@ class AudioController extends ChangeNotifier {
   double _speed = AppConstants.defaultSpeed;
   double _pitch = AppConstants.defaultPitch;
   String? _error;
+  bool _iosIsPlaying = false;
+  bool _iosIsLooping = false;
+  Duration _iosPosition = Duration.zero;
+  Duration? _iosDuration;
 
   StreamSubscription<ProcessingState>? _processingSubscription;
+  Timer? _iosPositionTimer;
 
-  Stream<Duration> get positionStream => _player.positionStream;
-  Stream<Duration?> get durationStream => _player.durationStream;
-  Stream<Duration> get bufferedPositionStream => _player.bufferedPositionStream;
-  Stream<PlayerState> get playerStateStream => _player.playerStateStream;
-  Duration? get duration => _player.duration;
+  // Use iOS player on iOS, just_audio on other platforms
+  bool get _shouldUseIOSPlayer => !kIsWeb && Platform.isIOS;
+
+  Stream<Duration> get positionStream {
+    if (_shouldUseIOSPlayer) {
+      return _iosPositionStream;
+    }
+    return _player.positionStream;
+  }
+
+  Stream<Duration?> get durationStream {
+    if (_shouldUseIOSPlayer) {
+      return _iosDurationStream;
+    }
+    return _player.durationStream;
+  }
+
+  Stream<Duration> get bufferedPositionStream {
+    if (_shouldUseIOSPlayer) {
+      return _iosPositionStream;
+    }
+    return _player.bufferedPositionStream;
+  }
+
+  Stream<PlayerState> get playerStateStream {
+    if (_shouldUseIOSPlayer) {
+      return _iosPlayerStateStream;
+    }
+    return _player.playerStateStream;
+  }
+
+  Duration? get duration {
+    if (_shouldUseIOSPlayer) {
+      return _iosDuration;
+    }
+    return _player.duration;
+  }
 
   bool get hasAudio => _processedAudio != null;
   bool get isProcessing => _isProcessing;
   bool get isRecording => _isRecording;
   bool get isPickingFile => _isPickingFile;
-  bool get isPlaying => _player.playing;
+  bool get isPlaying {
+    if (_shouldUseIOSPlayer) {
+      return _iosIsPlaying;
+    }
+    return _player.playing;
+  }
+
   bool get canPlay => hasAudio && !_isProcessing && !_isRecording;
   double get speed => _speed;
   double get pitch => _pitch;
-  bool get isLooping => _player.loopMode == LoopMode.one;
+  bool get isLooping {
+    if (_shouldUseIOSPlayer) {
+      return _iosIsLooping;
+    }
+    return _player.loopMode == LoopMode.one;
+  }
+
   PlaybackDirection get direction => _direction;
   String? get errorMessage => _error;
   List<AudioHistoryEntry> get history => _historyDatabase.entries;
+  bool get isPitchSupported => true; // Platform channel supports pitch on iOS
+
+  // iOS position stream
+  Stream<Duration> get _iosPositionStream async* {
+    while (true) {
+      yield _iosPosition;
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+  }
+
+  // iOS duration stream
+  Stream<Duration?> get _iosDurationStream async* {
+    yield _iosDuration;
+    // Keep stream alive and emit updates when duration changes
+    await for (final _ in Stream.periodic(const Duration(seconds: 1))) {
+      yield _iosDuration;
+    }
+  }
+
+  // iOS player state stream
+  Stream<PlayerState> get _iosPlayerStateStream async* {
+    while (true) {
+      // Create a PlayerState compatible with just_audio
+      // PlayerState constructor: PlayerState(bool playing, ProcessingState processingState)
+      yield PlayerState(
+        _iosIsPlaying,
+        _iosIsPlaying ? ProcessingState.ready : ProcessingState.idle,
+      );
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+  }
 
   Future<void> init() async {
     if (_initialized) return;
@@ -188,35 +269,153 @@ class AudioController extends ChangeNotifier {
 
     try {
       _isPickingFile = true;
+      _error = null;
       notifyListeners();
 
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.audio,
-        allowMultiple: false,
-      );
+      // On iOS, use FileType.any which is the most reliable
+      // Don't use fallbacks as they cause "multiple_request" errors
+      FilePickerResult? result;
+
+      if (!kIsWeb && Platform.isIOS) {
+        result = await FilePicker.platform.pickFiles(
+          type: FileType.any,
+          allowMultiple: false,
+          withData: false,
+        );
+      } else {
+        result = await FilePicker.platform.pickFiles(
+          type: FileType.audio,
+          allowMultiple: false,
+          withData: kIsWeb, // Only use withData on web
+        );
+      }
 
       if (result == null || result.files.isEmpty) {
+        _isPickingFile = false;
+        notifyListeners();
         return;
       }
 
-      final filePath = result.files.single.path;
-      if (filePath == null || filePath.isEmpty) {
-        _setError('Invalid file selected. Please try again.');
-        return;
-      }
+      final pickedFile = result.files.single;
 
-      final file = File(filePath);
-      if (!file.existsSync()) {
-        _setError('Selected file does not exist.');
-        return;
-      }
+      if (kIsWeb) {
+        // Web platform: use bytes
+        if (pickedFile.bytes == null || pickedFile.bytes!.isEmpty) {
+          _setError('Invalid file selected. Please try again.');
+          return;
+        }
 
-      await _prepareAudioFiles(file);
+        // Save bytes to a temporary file
+        try {
+          final directory = await getTemporaryDirectory();
+          final extension = pickedFile.extension?.isNotEmpty == true
+              ? '.${pickedFile.extension}'
+              : '.mp3';
+          final fileName = pickedFile.name.isNotEmpty
+              ? pickedFile.name
+              : 'audio_${DateTime.now().millisecondsSinceEpoch}$extension';
+          final filePath = p.join(directory.path, fileName);
+          final file = File(filePath);
+          await file.writeAsBytes(pickedFile.bytes!);
+          await _prepareAudioFiles(file);
+        } catch (e) {
+          _setError('Failed to process file on web: $e');
+          return;
+        }
+      } else {
+        // Mobile/Desktop platforms: use file path
+        final filePath = pickedFile.path;
+
+        if (filePath == null || filePath.isEmpty) {
+          // On iOS, if path is not available, we need to use bytes
+          // This requires picking again with withData: true
+          if (Platform.isIOS) {
+            try {
+              // Re-pick with data on iOS if path is not available
+              final resultWithData = await FilePicker.platform.pickFiles(
+                type: FileType.audio,
+                allowMultiple: false,
+                withData: true,
+              );
+
+              if (resultWithData != null &&
+                  resultWithData.files.isNotEmpty &&
+                  resultWithData.files.single.bytes != null &&
+                  resultWithData.files.single.bytes!.isNotEmpty) {
+                final bytes = resultWithData.files.single.bytes!;
+                final directory = await getTemporaryDirectory();
+                final extension = pickedFile.extension?.isNotEmpty == true
+                    ? '.${pickedFile.extension}'
+                    : '.mp3';
+                final fileName = pickedFile.name.isNotEmpty
+                    ? pickedFile.name
+                    : 'audio_${DateTime.now().millisecondsSinceEpoch}$extension';
+                final tempPath = p.join(directory.path, fileName);
+                final file = File(tempPath);
+                await file.writeAsBytes(bytes);
+                await _prepareAudioFiles(file);
+                return;
+              }
+            } catch (e) {
+              _setError('Failed to load file: $e');
+              return;
+            }
+          }
+
+          _setError('Invalid file selected. Please try again.');
+          return;
+        }
+
+        // On iOS, file paths from document picker are often temporary
+        // Copy the file to a permanent location
+        if (Platform.isIOS) {
+          try {
+            final sourceFile = File(filePath);
+            if (!sourceFile.existsSync()) {
+              _setError(
+                'Selected file does not exist. Please try selecting the file again.',
+              );
+              return;
+            }
+
+            // Copy to app's temporary directory for processing
+            final directory = await getTemporaryDirectory();
+            final extension = pickedFile.extension?.isNotEmpty == true
+                ? '.${pickedFile.extension}'
+                : '.mp3';
+            final fileName = pickedFile.name.isNotEmpty
+                ? pickedFile.name
+                : 'audio_${DateTime.now().millisecondsSinceEpoch}$extension';
+            final tempPath = p.join(directory.path, fileName);
+            final copiedFile = await sourceFile.copy(tempPath);
+            await _prepareAudioFiles(copiedFile);
+            return;
+          } catch (e) {
+            _setError('Failed to process file: $e');
+            return;
+          }
+        }
+
+        // For Android and other platforms, use the path directly
+        final file = File(filePath);
+        if (!file.existsSync()) {
+          _setError(
+            'Selected file does not exist. Please try selecting the file again.',
+          );
+          return;
+        }
+
+        await _prepareAudioFiles(file);
+      }
     } catch (e) {
       final errorMsg = e.toString();
       if (errorMsg.contains('multiple_request') ||
           errorMsg.contains('Cancelled') ||
-          errorMsg.contains('cancel')) {
+          errorMsg.contains('cancel') ||
+          errorMsg.contains('User canceled')) {
+        // User cancelled, don't show error
+        _isPickingFile = false;
+        notifyListeners();
         return;
       }
       _setError(
@@ -231,7 +430,15 @@ class AudioController extends ChangeNotifier {
   Future<void> seek(Duration position) async {
     if (!hasAudio) return;
     try {
-      await _player.seek(position);
+      if (_shouldUseIOSPlayer) {
+        final success = await PitchService.seek(position.inMilliseconds);
+        if (success) {
+          _iosPosition = position;
+          notifyListeners();
+        }
+      } else {
+        await _player.seek(position);
+      }
     } catch (e) {
       _setError('Unable to seek: $e');
     }
@@ -240,10 +447,22 @@ class AudioController extends ChangeNotifier {
   Future<void> togglePlayback() async {
     if (!canPlay) return;
     try {
-      if (_player.playing) {
-        await _player.pause();
+      if (_shouldUseIOSPlayer) {
+        if (_iosIsPlaying) {
+          await PitchService.pause();
+          _iosIsPlaying = false;
+          _stopIOSPositionTimer();
+        } else {
+          await PitchService.play();
+          _iosIsPlaying = true;
+          _startIOSPositionTimer();
+        }
       } else {
-        await _player.play();
+        if (_player.playing) {
+          await _player.pause();
+        } else {
+          await _player.play();
+        }
       }
     } catch (e) {
       _setError('Playback failed: $e');
@@ -252,21 +471,45 @@ class AudioController extends ChangeNotifier {
   }
 
   Future<void> stopPlayback() async {
-    await _player.stop();
+    if (_shouldUseIOSPlayer) {
+      await PitchService.stop();
+      _iosIsPlaying = false;
+      _iosPosition = Duration.zero;
+      _stopIOSPositionTimer();
+    } else {
+      await _player.stop();
+    }
     notifyListeners();
   }
 
   Future<void> setDirection(PlaybackDirection direction) async {
     if (_direction == direction) return;
+
+    // Stop playback before switching direction
+    final wasPlaying = isPlaying;
+    if (wasPlaying) {
+      await stopPlayback();
+    }
+
     _direction = direction;
     await _loadCurrentDirection();
+
+    // Restart playback if it was playing before
+    if (wasPlaying && canPlay) {
+      await togglePlayback();
+    }
+
     notifyListeners();
   }
 
   Future<void> setSpeed(double value) async {
     _speed = value;
     try {
-      await _player.setSpeed(value);
+      if (_shouldUseIOSPlayer) {
+        await PitchService.setSpeed(value);
+      } else {
+        await _player.setSpeed(value);
+      }
     } catch (e) {
       _setError('Unable to set speed: $e');
     }
@@ -276,7 +519,11 @@ class AudioController extends ChangeNotifier {
   Future<void> setPitch(double value) async {
     _pitch = value;
     try {
-      await _player.setPitch(value);
+      if (_shouldUseIOSPlayer) {
+        await PitchService.setPitch(value);
+      } else {
+        await _player.setPitch(value);
+      }
     } catch (e) {
       _setError('Unable to set pitch: $e');
     }
@@ -284,7 +531,12 @@ class AudioController extends ChangeNotifier {
   }
 
   Future<void> toggleLoop(bool enabled) async {
-    await _player.setLoopMode(enabled ? LoopMode.one : LoopMode.off);
+    _iosIsLooping = enabled;
+    if (_shouldUseIOSPlayer) {
+      await PitchService.setLooping(enabled);
+    } else {
+      await _player.setLoopMode(enabled ? LoopMode.one : LoopMode.off);
+    }
     notifyListeners();
   }
 
@@ -326,15 +578,78 @@ class AudioController extends ChangeNotifier {
   Future<void> _loadCurrentDirection() async {
     final path = _currentPath;
     if (path == null) return;
+
+    // Verify file exists
+    final file = File(path);
+    if (!file.existsSync()) {
+      _setError(
+        'Audio file not found: ${_direction == PlaybackDirection.forward ? "forward" : "reverse"}',
+      );
+      return;
+    }
+
     try {
-      await _player.stop();
-      await _player.setFilePath(path);
-      await _player.setSpeed(_speed);
-      await _player.setPitch(_pitch);
-      await _player.setLoopMode(isLooping ? LoopMode.one : LoopMode.off);
+      if (_shouldUseIOSPlayer) {
+        // Use iOS platform channel player
+        await PitchService.stop();
+        _iosIsPlaying = false;
+        _iosPosition = Duration.zero;
+        _stopIOSPositionTimer();
+
+        final success = await PitchService.loadAudio(path);
+        if (success) {
+          await PitchService.setSpeed(_speed);
+          await PitchService.setPitch(_pitch);
+          await PitchService.setLooping(_iosIsLooping);
+
+          // Get duration
+          final durationMs = await PitchService.getDuration();
+          _iosDuration = Duration(milliseconds: durationMs);
+        } else {
+          _setError('Failed to load audio on iOS');
+        }
+      } else {
+        // Use just_audio for Android/web
+        await _player.stop();
+        await _player.setFilePath(path);
+        await _player.setSpeed(_speed);
+        await _player.setPitch(_pitch);
+        await _player.setLoopMode(isLooping ? LoopMode.one : LoopMode.off);
+      }
     } catch (e) {
       _setError('Failed to load audio: $e');
     }
+  }
+
+  void _startIOSPositionTimer() {
+    _stopIOSPositionTimer();
+    _iosPositionTimer = Timer.periodic(const Duration(milliseconds: 100), (
+      timer,
+    ) async {
+      if (!_iosIsPlaying) {
+        timer.cancel();
+        return;
+      }
+      try {
+        final positionMs = await PitchService.getPosition();
+        _iosPosition = Duration(milliseconds: positionMs);
+        if (_iosDuration != null && _iosPosition >= _iosDuration!) {
+          _iosPosition = _iosDuration!;
+          if (!_iosIsLooping) {
+            _iosIsPlaying = false;
+            timer.cancel();
+          }
+        }
+        notifyListeners();
+      } catch (e) {
+        // Ignore position errors
+      }
+    });
+  }
+
+  void _stopIOSPositionTimer() {
+    _iosPositionTimer?.cancel();
+    _iosPositionTimer = null;
   }
 
   void _setProcessing(bool value) {
@@ -350,7 +665,12 @@ class AudioController extends ChangeNotifier {
   @override
   void dispose() {
     _processingSubscription?.cancel();
-    _player.dispose();
+    _stopIOSPositionTimer();
+    if (_shouldUseIOSPlayer) {
+      PitchService.stop();
+    } else {
+      _player.dispose();
+    }
     unawaited(_recorder.dispose());
     super.dispose();
   }

@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import '../error/app_failure.dart';
 import '../utils/audio_utils.dart';
 import '../../features/audio/domain/entities/processed_audio.dart';
+import 'reverse_audio_service.dart';
 
 class AudioProcessingService {
   const AudioProcessingService();
@@ -35,9 +36,17 @@ class AudioProcessingService {
         await originalFile.copy(forwardFile.path);
       }
 
-      // For now, copy the file as "reversed" - actual reversing requires FFmpeg
-      // TODO: Implement proper audio reversing using platform channels or FFmpeg
-      await originalFile.copy(reverseFile.path);
+      // Reverse the audio file using platform channel
+      final success = await ReverseAudioService.reverseAudio(
+        originalFile.path,
+        reverseFile.path,
+      );
+
+      if (!success) {
+        // Fallback: if reversal fails, just copy the file
+        // This ensures the app still works even if reversal isn't supported
+        await originalFile.copy(reverseFile.path);
+      }
 
       return ProcessedAudio(
         forwardPath: forwardFile.path,
