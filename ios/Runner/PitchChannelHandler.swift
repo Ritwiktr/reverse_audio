@@ -377,13 +377,19 @@ class PitchChannelHandler: NSObject, FlutterPlugin {
                 let inputURL = URL(fileURLWithPath: inputPath)
                 let outputURL = URL(fileURLWithPath: outputPath)
                 
+                print("PitchChannelHandler: Starting reverse audio - Input: \(inputPath)")
+                print("PitchChannelHandler: Output: \(outputPath)")
+                
                 // Load the audio file
                 let audioFile = try AVAudioFile(forReading: inputURL)
                 let format = audioFile.processingFormat
                 let frameCount = AVAudioFrameCount(audioFile.length)
                 
+                print("PitchChannelHandler: Audio format - Sample Rate: \(format.sampleRate), Channels: \(format.channelCount), Frames: \(frameCount)")
+                
                 // Read all audio data
                 guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+                    print("PitchChannelHandler: Failed to create PCM buffer")
                     DispatchQueue.main.async {
                         result(false)
                     }
@@ -391,6 +397,7 @@ class PitchChannelHandler: NSObject, FlutterPlugin {
                 }
                 
                 try audioFile.read(into: buffer)
+                print("PitchChannelHandler: Read \(buffer.frameLength) frames from input file")
                 
                 // Reverse the audio buffer
                 if let channelData = buffer.floatChannelData {
@@ -407,6 +414,7 @@ class PitchChannelHandler: NSObject, FlutterPlugin {
                             channelBuffer[swapIndex] = temp
                         }
                     }
+                    print("PitchChannelHandler: Reversed float channel data")
                 } else if let channelData = buffer.int16ChannelData {
                     let channelCount = Int(format.channelCount)
                     let frameLength = Int(buffer.frameLength)
@@ -421,6 +429,7 @@ class PitchChannelHandler: NSObject, FlutterPlugin {
                             channelBuffer[swapIndex] = temp
                         }
                     }
+                    print("PitchChannelHandler: Reversed int16 channel data")
                 } else if let channelData = buffer.int32ChannelData {
                     let channelCount = Int(format.channelCount)
                     let frameLength = Int(buffer.frameLength)
@@ -435,19 +444,67 @@ class PitchChannelHandler: NSObject, FlutterPlugin {
                             channelBuffer[swapIndex] = temp
                         }
                     }
+                    print("PitchChannelHandler: Reversed int32 channel data")
+                } else {
+                    print("PitchChannelHandler: Unknown channel data format")
+                    DispatchQueue.main.async {
+                        result(false)
+                    }
+                    return
                 }
                 
+                // Create proper output settings for a standard audio file
+                var outputSettings: [String: Any] = [
+                    AVFormatIDKey: kAudioFormatLinearPCM,
+                    AVSampleRateKey: format.sampleRate,
+                    AVNumberOfChannelsKey: format.channelCount,
+                    AVLinearPCMBitDepthKey: 16,
+                    AVLinearPCMIsFloatKey: false,
+                    AVLinearPCMIsBigEndianKey: false,
+                    AVLinearPCMIsNonInterleaved: false
+                ]
+                
+                // Try to use the original file's settings if available, with fallback
+                if let originalSettings = audioFile.fileFormat.settings as? [String: Any] {
+                    // Prefer original format ID if it's a valid output format
+                    if let formatID = originalSettings[AVFormatIDKey] as? NSNumber {
+                        let format = formatID.uint32Value
+                        // Only use original format if it's a common output format
+                        if format == kAudioFormatLinearPCM || 
+                           format == kAudioFormatMPEG4AAC ||
+                           format == kAudioFormatAppleLossless {
+                            outputSettings[AVFormatIDKey] = formatID
+                        }
+                    }
+                }
+                
+                print("PitchChannelHandler: Creating output file with settings: \(outputSettings)")
+                
                 // Create output file
-                let outputFile = try AVAudioFile(forWriting: outputURL, settings: format.settings)
+                let outputFile = try AVAudioFile(forWriting: outputURL, settings: outputSettings)
                 
                 // Write reversed buffer to output file
                 try outputFile.write(from: buffer)
+                print("PitchChannelHandler: Successfully wrote \(buffer.frameLength) frames to output file")
                 
-                DispatchQueue.main.async {
-                    result(true)
+                // Verify output file was created
+                if FileManager.default.fileExists(atPath: outputPath) {
+                    let attributes = try FileManager.default.attributesOfItem(atPath: outputPath)
+                    let fileSize = attributes[.size] as? Int64 ?? 0
+                    print("PitchChannelHandler: Output file created, size: \(fileSize) bytes")
+                    
+                    DispatchQueue.main.async {
+                        result(true)
+                    }
+                } else {
+                    print("PitchChannelHandler: Output file was not created")
+                    DispatchQueue.main.async {
+                        result(false)
+                    }
                 }
             } catch {
                 print("PitchChannelHandler: Error reversing audio: \(error.localizedDescription)")
+                print("PitchChannelHandler: Error details: \(error)")
                 DispatchQueue.main.async {
                     result(false)
                 }

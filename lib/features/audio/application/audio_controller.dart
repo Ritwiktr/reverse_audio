@@ -58,39 +58,40 @@ class AudioController extends ChangeNotifier {
   StreamSubscription<ProcessingState>? _processingSubscription;
   Timer? _iosPositionTimer;
 
-  // Use iOS player on iOS, just_audio on other platforms
-  bool get _shouldUseIOSPlayer => !kIsWeb && Platform.isIOS;
+  // Use platform channel player on iOS and Android, just_audio on web
+  bool get _shouldUsePlatformPlayer =>
+      !kIsWeb && (Platform.isIOS || Platform.isAndroid);
 
   Stream<Duration> get positionStream {
-    if (_shouldUseIOSPlayer) {
+    if (_shouldUsePlatformPlayer) {
       return _iosPositionStream;
     }
     return _player.positionStream;
   }
 
   Stream<Duration?> get durationStream {
-    if (_shouldUseIOSPlayer) {
+    if (_shouldUsePlatformPlayer) {
       return _iosDurationStream;
     }
     return _player.durationStream;
   }
 
   Stream<Duration> get bufferedPositionStream {
-    if (_shouldUseIOSPlayer) {
+    if (_shouldUsePlatformPlayer) {
       return _iosPositionStream;
     }
     return _player.bufferedPositionStream;
   }
 
   Stream<PlayerState> get playerStateStream {
-    if (_shouldUseIOSPlayer) {
+    if (_shouldUsePlatformPlayer) {
       return _iosPlayerStateStream;
     }
     return _player.playerStateStream;
   }
 
   Duration? get duration {
-    if (_shouldUseIOSPlayer) {
+    if (_shouldUsePlatformPlayer) {
       return _iosDuration;
     }
     return _player.duration;
@@ -101,7 +102,7 @@ class AudioController extends ChangeNotifier {
   bool get isRecording => _isRecording;
   bool get isPickingFile => _isPickingFile;
   bool get isPlaying {
-    if (_shouldUseIOSPlayer) {
+    if (_shouldUsePlatformPlayer) {
       return _iosIsPlaying;
     }
     return _player.playing;
@@ -111,7 +112,7 @@ class AudioController extends ChangeNotifier {
   double get speed => _speed;
   double get pitch => _pitch;
   bool get isLooping {
-    if (_shouldUseIOSPlayer) {
+    if (_shouldUsePlatformPlayer) {
       return _iosIsLooping;
     }
     return _player.loopMode == LoopMode.one;
@@ -120,7 +121,8 @@ class AudioController extends ChangeNotifier {
   PlaybackDirection get direction => _direction;
   String? get errorMessage => _error;
   List<AudioHistoryEntry> get history => _historyDatabase.entries;
-  bool get isPitchSupported => true; // Platform channel supports pitch on iOS
+  bool get isPitchSupported =>
+      true; // Platform channel supports pitch on iOS and Android
 
   // iOS position stream
   Stream<Duration> get _iosPositionStream async* {
@@ -430,7 +432,7 @@ class AudioController extends ChangeNotifier {
   Future<void> seek(Duration position) async {
     if (!hasAudio) return;
     try {
-      if (_shouldUseIOSPlayer) {
+      if (_shouldUsePlatformPlayer) {
         final success = await PitchService.seek(position.inMilliseconds);
         if (success) {
           _iosPosition = position;
@@ -447,7 +449,7 @@ class AudioController extends ChangeNotifier {
   Future<void> togglePlayback() async {
     if (!canPlay) return;
     try {
-      if (_shouldUseIOSPlayer) {
+      if (_shouldUsePlatformPlayer) {
         if (_iosIsPlaying) {
           await PitchService.pause();
           _iosIsPlaying = false;
@@ -471,7 +473,7 @@ class AudioController extends ChangeNotifier {
   }
 
   Future<void> stopPlayback() async {
-    if (_shouldUseIOSPlayer) {
+    if (_shouldUsePlatformPlayer) {
       await PitchService.stop();
       _iosIsPlaying = false;
       _iosPosition = Duration.zero;
@@ -505,7 +507,7 @@ class AudioController extends ChangeNotifier {
   Future<void> setSpeed(double value) async {
     _speed = value;
     try {
-      if (_shouldUseIOSPlayer) {
+      if (_shouldUsePlatformPlayer) {
         await PitchService.setSpeed(value);
       } else {
         await _player.setSpeed(value);
@@ -519,7 +521,7 @@ class AudioController extends ChangeNotifier {
   Future<void> setPitch(double value) async {
     _pitch = value;
     try {
-      if (_shouldUseIOSPlayer) {
+      if (_shouldUsePlatformPlayer) {
         await PitchService.setPitch(value);
       } else {
         await _player.setPitch(value);
@@ -532,7 +534,7 @@ class AudioController extends ChangeNotifier {
 
   Future<void> toggleLoop(bool enabled) async {
     _iosIsLooping = enabled;
-    if (_shouldUseIOSPlayer) {
+    if (_shouldUsePlatformPlayer) {
       await PitchService.setLooping(enabled);
     } else {
       await _player.setLoopMode(enabled ? LoopMode.one : LoopMode.off);
@@ -589,8 +591,8 @@ class AudioController extends ChangeNotifier {
     }
 
     try {
-      if (_shouldUseIOSPlayer) {
-        // Use iOS platform channel player
+      if (_shouldUsePlatformPlayer) {
+        // Use platform channel player (iOS/Android)
         await PitchService.stop();
         _iosIsPlaying = false;
         _iosPosition = Duration.zero;
@@ -606,10 +608,12 @@ class AudioController extends ChangeNotifier {
           final durationMs = await PitchService.getDuration();
           _iosDuration = Duration(milliseconds: durationMs);
         } else {
-          _setError('Failed to load audio on iOS');
+          _setError(
+            'Failed to load audio on ${Platform.isIOS ? "iOS" : "Android"}',
+          );
         }
       } else {
-        // Use just_audio for Android/web
+        // Use just_audio for web
         await _player.stop();
         await _player.setFilePath(path);
         await _player.setSpeed(_speed);
@@ -666,7 +670,7 @@ class AudioController extends ChangeNotifier {
   void dispose() {
     _processingSubscription?.cancel();
     _stopIOSPositionTimer();
-    if (_shouldUseIOSPlayer) {
+    if (_shouldUsePlatformPlayer) {
       PitchService.stop();
     } else {
       _player.dispose();

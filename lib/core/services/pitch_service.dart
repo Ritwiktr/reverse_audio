@@ -7,10 +7,10 @@ import 'package:flutter/services.dart';
 class PitchService {
   static const MethodChannel _channel = MethodChannel('com.reverseaudio.pitch');
 
-  /// Sets the pitch for the audio player on iOS
+  /// Sets the pitch for the audio player
   /// Returns true if successful, false otherwise
   static Future<bool> setPitch(double pitch) async {
-    if (!Platform.isIOS) {
+    if (!Platform.isIOS && !Platform.isAndroid) {
       return false;
     }
 
@@ -26,9 +26,9 @@ class PitchService {
     }
   }
 
-  /// Sets the speed for the audio player on iOS
+  /// Sets the speed for the audio player
   static Future<bool> setSpeed(double speed) async {
-    if (!Platform.isIOS) {
+    if (!Platform.isIOS && !Platform.isAndroid) {
       return false;
     }
 
@@ -43,9 +43,9 @@ class PitchService {
     }
   }
 
-  /// Loads audio file for playback on iOS
+  /// Loads audio file for playback
   static Future<bool> loadAudio(String filePath) async {
-    if (!Platform.isIOS) {
+    if (!Platform.isIOS && !Platform.isAndroid) {
       return false;
     }
 
@@ -60,9 +60,9 @@ class PitchService {
     }
   }
 
-  /// Plays audio on iOS
+  /// Plays audio
   static Future<bool> play() async {
-    if (!Platform.isIOS) {
+    if (!Platform.isIOS && !Platform.isAndroid) {
       return false;
     }
 
@@ -75,9 +75,9 @@ class PitchService {
     }
   }
 
-  /// Pauses audio playback on iOS
+  /// Pauses audio playback
   static Future<bool> pause() async {
-    if (!Platform.isIOS) {
+    if (!Platform.isIOS && !Platform.isAndroid) {
       return false;
     }
 
@@ -90,9 +90,9 @@ class PitchService {
     }
   }
 
-  /// Stops audio playback on iOS
+  /// Stops audio playback
   static Future<bool> stop() async {
-    if (!Platform.isIOS) {
+    if (!Platform.isIOS && !Platform.isAndroid) {
       return false;
     }
 
@@ -107,7 +107,7 @@ class PitchService {
 
   /// Seeks to a specific position in milliseconds
   static Future<bool> seek(int positionMs) async {
-    if (!Platform.isIOS) {
+    if (!Platform.isIOS && !Platform.isAndroid) {
       return false;
     }
 
@@ -124,7 +124,7 @@ class PitchService {
 
   /// Sets looping mode
   static Future<bool> setLooping(bool looping) async {
-    if (!Platform.isIOS) {
+    if (!Platform.isIOS && !Platform.isAndroid) {
       return false;
     }
 
@@ -141,7 +141,7 @@ class PitchService {
 
   /// Gets current playback position in milliseconds
   static Future<int> getPosition() async {
-    if (!Platform.isIOS) {
+    if (!Platform.isIOS && !Platform.isAndroid) {
       return 0;
     }
 
@@ -161,7 +161,7 @@ class PitchService {
 
   /// Gets audio duration in milliseconds
   static Future<int> getDuration() async {
-    if (!Platform.isIOS) {
+    if (!Platform.isIOS && !Platform.isAndroid) {
       return 0;
     }
 
@@ -181,7 +181,7 @@ class PitchService {
 
   /// Checks if pitch control is available on this platform
   static Future<bool> isPitchSupported() async {
-    if (!Platform.isIOS) {
+    if (!Platform.isIOS && !Platform.isAndroid) {
       return false;
     }
 
